@@ -1,15 +1,25 @@
 import requests
 import os
+import urllib.parse
 
 class ZillowZestimateFetcher():
-    def __init__(self, API_key: str):
-        self._API_key = API_key
+    def __init__(self, PLACES_API_key: str, MAPS_API_key: str):
+        self._PLACES_API_key = PLACES_API_key
+        self._MAPS_API_key = MAPS_API_key
 
     def fetch(self, addresses: [str]):
         pass
 
-    def _fetch_places(self, address, radius=2):
-        pass
+    def _fetch_places(self, address: str, radius: int = 2) -> [dict]:
+        url_safe_address = urllib.parse.query(address)
+        address_request = requests.get(f'https://maps.googleapis.com/maps/api/geocode/json?address={url_safe_address}&key=AIzaSyAZPMn0c9TFEauzCAmjA53MA42sf6bj6tM').json()
+        if address_request["results"] == []:
+            return ""
+
+        addess_location = address_request[0]["geometry"]["location"]
+        lat, lng = (address_location["lat"], address_location["lng"])
+
+        
     
     def _fetch_zpid(self, address: str) -> str:
         headers = {
@@ -98,6 +108,6 @@ class ZillowZestimateFetcher():
         return response.json()
 
 if __name__ == "__main__":
-    KEY = os.environ.get('GMAPS_API_KEY')
-    fetcher = ZillowZestimateFetcher(KEY)
+    PLACES_KEY = os.environ.get('GMAPS_PLACES_API_KEY')
+    fetcher = ZillowZestimateFetcher(PLACES_KEY, "1")
     print(fetcher._fetch_house_data(fetcher._fetch_zpid("673 Oak Park Way")))

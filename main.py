@@ -1,24 +1,63 @@
 import requests
 import os
 import urllib.parse
+import math
+import csv
+from collections import defaultdict
+from tqdm import tqdm
 
 class ZillowZestimateFetcher():
     def __init__(self, PLACES_API_key: str, MAPS_API_key: str):
         self._PLACES_API_key = PLACES_API_key
         self._MAPS_API_key = MAPS_API_key
 
-    def fetch(self, addresses: [str]):
-        pass
+    def fetch(self, addresses: [[str]], slaughter_names: [str]):
+        assert len(addresses) == len(slaughter_names)
+        
+        final_data = []
+        for i, slaughter in enumerate(addresses):
+            slaughter_name = slaughter_names[i]
+            slaughter_loc = self._fetch_place(slaughter_name)
+            for address in tqdm(slaughter):
+                if address == "":
+                    continue
+                house_loc = self._fetch_zpid(address)
+                if house_loc == "":
+                    continue
+                lat, lng = (house_loc["lat"], house_loc["lng"])
+                zpid = house_loc["zpid"]
+                house_data = self._fetch_house_data(zpid)
+                house_data['distance'] = self._get_distance(slaughter_loc, house_loc)
+                house_data[urllib.parse.quote(slaughter_name)] = 1
+                for name in slaughter_names:
+                    if name != slaughter_name:
+                        house_data[urllib.parse.quote(name)] = 0
+                final_data.append(house_data)
+        return final_data
+                
+    def _fetch_place(self, address: str, radius: int = 20) -> [dict]:
+        radius_meters = radius * 1609.34
+        url_safe_address = urllib.parse.quote(address)
 
-    def _fetch_places(self, address: str, radius: int = 2) -> [dict]:
-        url_safe_address = urllib.parse.query(address)
-        address_request = requests.get(f'https://maps.googleapis.com/maps/api/geocode/json?address={url_safe_address}&key=AIzaSyAZPMn0c9TFEauzCAmjA53MA42sf6bj6tM').json()
+        address_request = requests.get(f'https://maps.googleapis.com/maps/api/geocode/json?address={url_safe_address}&key={self._MAPS_API_key}').json()
+
         if address_request["results"] == []:
+            print(f"BRUH {address}")
             return ""
-
-        addess_location = address_request[0]["geometry"]["location"]
+        address_location = address_request["results"][0]["geometry"]["location"]
         lat, lng = (address_location["lat"], address_location["lng"])
+        return {'lat': lat, "lng": lng}
 
+    def _get_distance(self, slaughter_loc, house_loc):
+        return math.sqrt((slaughter_loc["lat"]-house_loc["lat"])**2 + (slaughter_loc["lng"]-house_loc["lng"])**2) * 69
+
+        #request = requests.get(f'https://maps.googleapis.com/maps/api/place/nearbysearch/json?location={lat}%2C{lng}&radius={radius_meters}&key={self._MAPS_API_key}').json()["results"]
+
+        #if request == []:
+        #    print(f"BRUH {address}")
+        #    return ""
+        
+        #return [{"address": None, "distance": math.sqrt((x["geometry"]["location"]["lat"]-lat)^2 + (x["geometry"]["location"]["lng"]-lng)^2) * 69} for x in request]
         
     
     def _fetch_zpid(self, address: str) -> str:
@@ -38,14 +77,20 @@ class ZillowZestimateFetcher():
         params = {
             'q': address,
             'resultTypes': 'allAddress',
-            'resultCount': '5',
+            'resultCount': '12',
         }
 
         response = requests.get('https://www.zillowstatic.com/autocomplete/v3/suggestions/', params=params, headers=headers)
+        try:
+            response.json()["results"]
+        except:
+            print(response.json())
+            print(address)
         if response.json()["results"] == []:
+            print("gaming "+address)
             return ""
         else:
-            return response.json()["results"][0]["metaData"]["zpid"]
+            return response.json()["results"][0]["metaData"]
 
     def _fetch_house_data(self, zpid: str) -> dict:
         cookies = {
@@ -105,9 +150,44 @@ class ZillowZestimateFetcher():
         }
 
         response = requests.post('https://www.zillow.com/graphql/', cookies=cookies, headers=headers, json=json_data)
-        return response.json()
+        response_json = response.json()["data"]['property']
+        
+        del response_json['photos'], response_json['onsiteMessage'], response_json['zillowOfferMarket'], response_json["listing_sub_type"], response_json["hasPublicVideo"], response_json["hdpTypeDimension"], response_json["listingTypeDimension"]
+
+        if response_json["homeStatus"] == "RECENTLY_SOLD":
+            response_json["homeStatus"] = 1
+        else:
+            response_json["homeStatus"] = 0
+            
+        if response_json["homeType"] == "SINGLE_FAMILY":
+            response_json["homeType"] = 0
+        else:
+            response_json["homeType"] = 1
+            
+        return {'bedrooms': response_json['bedrooms'], "bathrooms": response_json["bathrooms"], 'livingArea': response_json['livingArea'], "zestimate": response_json['zestimate'], "homeStatus": response_json["homeStatus"], "homeType": response_json["homeType"]}
 
 if __name__ == "__main__":
-    PLACES_KEY = os.environ.get('GMAPS_PLACES_API_KEY')
-    fetcher = ZillowZestimateFetcher(PLACES_KEY, "1")
-    print(fetcher._fetch_house_data(fetcher._fetch_zpid("673 Oak Park Way")))
+    PLACES_KEY, MAPS_KEY = (os.environ.get('GMAPS_PLACES_API_KEY'), os.environ.get('GMAPS_API_KEY'))
+    fetcher = ZillowZestimateFetcher(PLACES_KEY, MAPS_KEY)
+    #print(fetcher._fetch_zpid("AK 99645"))
+    #print(len(fetcher._fetch_zpid("AK 99645")))
+    #print(fetcher._fetch_house_data(fetcher._fetch_zpid("673 Oak Park Way")["zpid"]))
+    columns = defaultdict(list) # each value in each column is appended to a list
+
+    with open('in.csv') as f:
+        reader = csv.DictReader(f) # read rows into a dictionary format
+        for row in reader: # read a row as {column1: value1, column2: value2,...}
+            for (k,v) in row.items(): # go over each column name and value 
+                columns[k].append(v) # append the value into the appropriate list
+                                    # based on column name k
+    columns = dict(columns)
+    #print(list(columns.values()))
+    data = fetcher.fetch(list(columns.values()), list(columns.keys()))
+                                    #data = fetcher.fetch([["673 Oak Park Way", "672 Oak Park Way"], ["674 Oak Park Way", "676 Oak Park Way"]], ["4136 Lander Ave Turlock", "697 S Oak Park Way, Emerald Hills, CA 94062"])
+    keys = data[0].keys()
+
+    with open('out.csv', 'w', newline='') as output_file:
+        dict_writer = csv.DictWriter(output_file, keys)
+        dict_writer.writeheader()
+        dict_writer.writerows(data)
+
